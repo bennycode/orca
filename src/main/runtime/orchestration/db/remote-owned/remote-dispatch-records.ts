@@ -51,11 +51,30 @@ export function getRemoteDispatch(
     | undefined
 }
 
-export function listRemoteDispatches(db: OrchestrationDb, runId: string): RemoteDispatchRow[] {
-  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: SELECT * over this table returns exactly its row shape.
+/** Newest first, in one Run or every Run, with the state of the link each came home under. */
+export function listRemoteDispatches(
+  db: OrchestrationDb,
+  scope: { runId?: string; limit: number }
+): (RemoteDispatchRow & { link_state: RemoteRunLinkRow['state'] | null })[] {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the record's columns plus the joined link state.
   return db.db
-    .prepare('SELECT * FROM remote_dispatches WHERE run_id = ? ORDER BY rowid')
-    .all(runId) as RemoteDispatchRow[]
+    .prepare(
+      `SELECT record.*, link.state AS link_state FROM remote_dispatches record
+       LEFT JOIN remote_run_links link ON link.conversation_id = record.conversation_id
+       WHERE (? IS NULL OR record.run_id = ?) ORDER BY record.rowid DESC LIMIT ?`
+    )
+    .all(scope.runId ?? null, scope.runId ?? null, scope.limit) as (RemoteDispatchRow & {
+    link_state: RemoteRunLinkRow['state'] | null
+  })[]
+}
+
+export function countRemoteDispatches(db: OrchestrationDb, runId: string | undefined): number {
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: COUNT(*) returns one number.
+  return (
+    db.db
+      .prepare('SELECT COUNT(*) AS count FROM remote_dispatches WHERE (? IS NULL OR run_id = ?)')
+      .get(runId ?? null, runId ?? null) as { count: number }
+  ).count
 }
 
 /** Identity only: which server runs the Dispatch and for which Task. State comes from the server's queue. */
@@ -154,7 +173,7 @@ function oweStopInTransaction(
     .prepare(
       `UPDATE remote_dispatches SET
          stop_owed = 1, stop_count = stop_count + 1, stop_attempt = 0,
-         stop_retries = 0, stop_retry_at = NULL, stop_last_error = NULL, updated_at = datetime('now')
+         stop_retries = 0, stop_retry_at = NULL, stop_last_error = NULL
        WHERE dispatch_id = ?`
     )
     .run(dispatchId)
@@ -198,8 +217,7 @@ export function listOwedRemoteStops(
 export function abandonRemoteDispatchStop(db: OrchestrationDb, dispatchId: string): void {
   db.db
     .prepare(
-      `UPDATE remote_dispatches SET stop_owed = 0, stop_retry_at = NULL, updated_at = datetime('now')
-       WHERE dispatch_id = ?`
+      `UPDATE remote_dispatches SET stop_owed = 0, stop_retry_at = NULL WHERE dispatch_id = ?`
     )
     .run(dispatchId)
 }
@@ -213,8 +231,7 @@ export function settleRemoteDispatchStop(
   return (
     db.db
       .prepare(
-        `UPDATE remote_dispatches SET stop_owed = 0, stop_retry_at = NULL, stop_last_error = NULL,
-           updated_at = datetime('now')
+        `UPDATE remote_dispatches SET stop_owed = 0, stop_retry_at = NULL, stop_last_error = NULL
          WHERE dispatch_id = ? AND stop_owed = 1 AND stop_count = ?`
       )
       .run(dispatchId, stopCount).changes === 1
@@ -239,7 +256,7 @@ export function deferRemoteDispatchStop(
     .prepare(
       `UPDATE remote_dispatches SET
          stop_attempt = CASE WHEN ? THEN stop_attempt + 1 ELSE stop_attempt END,
-         stop_retries = stop_retries + 1, stop_retry_at = ?, stop_last_error = ?, updated_at = datetime('now')
+         stop_retries = stop_retries + 1, stop_retry_at = ?, stop_last_error = ?
        WHERE dispatch_id = ? AND stop_owed = 1 AND stop_count = ? AND stop_attempt = ?`
     )
     .run(
