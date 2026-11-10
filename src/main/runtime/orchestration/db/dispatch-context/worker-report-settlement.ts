@@ -160,6 +160,12 @@ export function settleWorkerReportInTransaction(
     .all(params.taskId, params.dispatchId) as { id: string }[]
 
   this.db.exec('SAVEPOINT settle_worker_report')
+  if (settledByUnobservedPrompt) {
+    // A paired coordinator gets the correction once, after all its writes; see peer_run_corrections.
+    this.db
+      .prepare('INSERT INTO peer_run_corrections (dispatch_id) VALUES (?)')
+      .run(params.dispatchId)
+  }
   const now = new Date().toISOString()
   const dispatchTransition = transitionLifecycleWithDb(this.db, {
     entity: 'dispatch',
@@ -206,6 +212,7 @@ export function settleWorkerReportInTransaction(
       projection: { stage: 'settled', updated_at: new Date().toISOString() },
       correction: 'unobserved_prompt_report'
     })
+    this.db.prepare('DELETE FROM peer_run_corrections WHERE dispatch_id = ?').run(params.dispatchId)
   } else if ((unprovenWorker || reportingStart) && params.outcome === 'succeeded') {
     transitionLifecycleWithDb(this.db, {
       entity: 'worker',
