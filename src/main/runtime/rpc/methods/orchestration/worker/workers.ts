@@ -137,6 +137,19 @@ export async function prepareWorkerStart(
       { effectsApplied: false }
     )
   }
+  const placement = params.worktree ?? 'current'
+  if (
+    orchestrationCaller?.kind === 'peer' &&
+    !followUp &&
+    !params.terminal &&
+    /^(current|new-child)$/.test(placement)
+  ) {
+    throw new OrchestrationError(
+      'invalid_argument',
+      `${orchestrationCaller.peerRun.home_label} has no workspace on this server, so --worktree ${placement} cannot place here. Use --worktree new-top-level --repo <repo>, or id:<worktree>. No effects were applied.`,
+      { effectsApplied: false }
+    )
+  }
   const db = runtime.getOrchestrationDb()
   const coordinator = resolveOrchestrationCaller(runtime, {
     callerTerminalHandle: params.from,
